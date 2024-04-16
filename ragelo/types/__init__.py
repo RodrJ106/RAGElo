@@ -12,6 +12,8 @@ from ragelo.types.types import (
     AnswerFormat,
     Document,
     LLMProviderTypes,
+    Metadata,
+    PairwiseGame,
     Query,
     RetrievalEvaluatorResult,
     RetrievalEvaluatorTypes,

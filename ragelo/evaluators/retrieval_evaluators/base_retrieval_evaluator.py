@@ -34,6 +34,9 @@ class BaseRetrievalEvaluator(BaseEvaluator):
     ):
         self.config = config
         self.llm_provider = llm_provider
+        self.query_idx: dict[str, int] = {}
+        self.doc_idx: dict[str, dict[str, int]] = {}
+
         if config.output_file is not None:
             self.output_file = config.output_file
 
@@ -111,16 +114,14 @@ class BaseRetrievalEvaluator(BaseEvaluator):
                 )
         return parsed_answers
 
-    async def batch_evaluate_async(
-        self, queries: list[Query]
-    ) -> list[RetrievalEvaluatorResult]:
+    async def batch_evaluate_async(self, queries: list[Query]) -> list[Query]:
         """Evaluate all the documents for a list of queries"""
         use_progress_bar = self.config.verbose
-        existing_output = self._get_existing_output()
         answers = [RetrievalEvaluatorResult(**x) for x in self._get_existing_output()]
+        self._add_evaluations_to_documents(queries, answers)
         tuples_to_eval = self.__get_tuples_to_evaluate(queries, answers)
         if len(tuples_to_eval) == 0:
-            return answers
+            return queries
 
         chunks = [
             tuples_to_eval[i : i + self.config.n_processes]
@@ -140,17 +141,44 @@ class BaseRetrievalEvaluator(BaseEvaluator):
             answers.extend(responses)
             pbar.update(len(chunk))
         pbar.close()
+        self._add_evaluations_to_documents(queries, answers)
 
         if self.config.verbose:
             print("✅ Done!")
             print(f"Total evaluations: {len(answers)}")
 
-        return answers
+        return queries
 
-    def batch_evaluate(self, queries: list[Query]) -> list[RetrievalEvaluatorResult]:
+    def __build_query_and_doc_idx(self, queries: list[Query]):
+        self.__query_idx = {query.qid: idx for idx, query in enumerate(queries)}
+        self.__doc_idx: dict[str, dict[str, int]] = {}
+        for query in queries:
+            self.__doc_idx[query.qid] = {
+                doc.did: idx for idx, doc in enumerate(query.retrieved_docs)
+            }
+
+    def _add_evaluations_to_documents(
+        self, queries: list[Query], evaluations: list[RetrievalEvaluatorResult]
+    ):
+        self.__build_query_and_doc_idx(queries)
+
+        for evaluation in evaluations:
+            if evaluation.qid not in self.__query_idx:
+                raise ValueError(f"Query {evaluation.qid} not found in the queries")
+            if evaluation.did not in self.__doc_idx[evaluation.qid]:
+                raise ValueError(
+                    f"Document {evaluation.did} not found in the documents retrieved for query {evaluation.qid}"
+                )
+            q_idx = self.__query_idx[evaluation.qid]
+            d_idx = self.__doc_idx[evaluation.qid][evaluation.did]
+            queries[q_idx].retrieved_docs[d_idx].evaluation = evaluation
+
+    def batch_evaluate(self, queries: list[Query]) -> list[Query]:
         """Evaluate all the documents for a list of queries"""
         use_progress_bar = self.config.verbose
         answers = [RetrievalEvaluatorResult(**x) for x in self._get_existing_output()]
+        self._add_evaluations_to_documents(queries, answers)
+
         failed_evaluations = 0
         tuples_to_eval = self.__get_tuples_to_evaluate(queries, answers)
         all_tuples = 0
@@ -161,7 +189,7 @@ class BaseRetrievalEvaluator(BaseEvaluator):
                     f"All {all_tuples} documents are already evaluated.\n"
                     "If you want to re-evaluate documents, use the --force flag."
                 )
-            return answers
+            return queries
         for query, document in tqdm(
             tuples_to_eval,
             desc="Evaluating retrieved documents",
@@ -178,21 +206,24 @@ class BaseRetrievalEvaluator(BaseEvaluator):
                 failed_evaluations += 1
                 continue
 
-            answers.append(
-                RetrievalEvaluatorResult(
-                    qid=qid,
-                    did=did,
-                    raw_answer=raw_answer,
-                    answer=answer,
-                )
+            answer = RetrievalEvaluatorResult(
+                qid=qid,
+                did=did,
+                raw_answer=raw_answer,
+                answer=answer,
             )
-            self._dump_response(answers[-1], self.output_columns, self.output_file)
+
+            # add the evaluations to the Document objects
+            q_idx = self.__query_idx[qid]
+            d_idx = self.__doc_idx[qid][did]
+            queries[q_idx].retrieved_docs[d_idx].evaluation = answer
+            self._dump_response(answer, self.output_columns, self.output_file)
 
         if self.config.verbose:
             print("✅ Done!")
             print(f"Unparsed answers: {failed_evaluations}")
             print(f"Total evaluations: {len(answers)}")
-        return answers
+        return queries
 
     def evaluate(
         self,

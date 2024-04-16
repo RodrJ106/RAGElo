@@ -101,16 +101,16 @@ class BaseEvaluator(ABC):
         return valid_fields
 
     @staticmethod
-    def __get_existing_output_from_json(output_file: str) -> list[dict[str, str]]:
+    def __get_existing_output_from_json(output_file: str) -> list[dict[str, Any]]:
         return json.load(open(output_file, "r"))
 
     @staticmethod
-    def __get_existing_output_from_jsonl(output_file: str) -> list[dict[str, str]]:
+    def __get_existing_output_from_jsonl(output_file: str) -> list[dict[str, Any]]:
         with open(output_file, "r") as f:
             return [json.loads(line) for line in f]
 
     @staticmethod
-    def __get_existing_output_from_csv(output_file: str) -> list[dict[str, str]]:
+    def __get_existing_output_from_csv(output_file: str) -> list[dict[str, Any]]:
         existing_lines: list[dict[str, str]] = []
         with open(output_file, "r") as f:
             reader = csv.DictReader(f)
@@ -118,7 +118,7 @@ class BaseEvaluator(ABC):
                 existing_lines.append(line)
         return existing_lines
 
-    def _get_existing_output(self) -> list[dict[str, str]]:
+    def _get_existing_output(self) -> list[dict[str, Any]]:
         existing_lines: list[dict[str, str]] = []
         if self.config.force and os.path.exists(self.output_file):
             logger.warning(f"Removing existing {self.output_file}!")
@@ -150,10 +150,11 @@ class BaseEvaluator(ABC):
                 rich.print(f"[bold blue]🔎 Query ID[/bold blue]: {response.qid}")
                 if isinstance(response, RetrievalEvaluatorResult):
                     rich.print(f"[bold blue]📜 Document ID[/bold blue]: {response.did}")
-                elif response.agent_a and response.agent_b:
+                elif isinstance(response.agent, tuple):
+                    agent_a, agent_b = response.agent
                     rich.print(
-                        f"[bold blue] {response.agent_a:<18} [/bold blue] 🆚  "
-                        f"[bold red] {response.agent_b}[/bold red]"
+                        f"[bold blue] {agent_a:<18} [/bold blue] 🆚  "
+                        f"[bold red] {agent_b}[/bold red]"
                     )
                 else:
                     rich.print(f"[bold blue]🕵️ Agent[/bold blue]: {response.agent}")
@@ -167,8 +168,6 @@ class BaseEvaluator(ABC):
         tqdm.write(f"Query ID: {response.qid}")
         if isinstance(response, RetrievalEvaluatorResult):
             tqdm.write(f"Document ID: {response.did}")
-        elif response.agent_a and response.agent_b:
-            tqdm.write(f"{response.agent_a} vs {response.agent_b}")
         else:
             tqdm.write(f"Agent: {response.agent}")
         tqdm.write(f"Raw Answer: {response.raw_answer}")

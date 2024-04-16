@@ -113,19 +113,18 @@ class BaseAnswerEvaluator(BaseEvaluator):
                 )
         return parsed_answers
 
-    async def batch_evaluate_async(
-        self, queries: list[Query]
-    ) -> list[AnswerEvaluatorResult]:
+    async def batch_evaluate_async(self, queries: list[Query]) -> list[Query]:
         """Evaluate all the documents for a list of queries"""
         use_progress_bar = self.config.verbose
-        answers = [AnswerEvaluatorResult(**x) for x in self._get_existing_output()]
+        evaluations = [AnswerEvaluatorResult(**x) for x in self._get_existing_output()]
         queries = self._add_retrieved_documents_to_queries(
             queries, self.config.documents_path
         )
+        self._add_evaluations_to_answers(queries, evaluations)
 
-        tuples_to_eval = self.__get_tuples_to_evaluate(queries, answers)
+        tuples_to_eval = self.__get_tuples_to_evaluate(queries, evaluations)
         if len(tuples_to_eval) == 0:
-            return answers
+            return queries
 
         chunks = [
             tuples_to_eval[i : i + self.config.n_processes]
@@ -134,7 +133,7 @@ class BaseAnswerEvaluator(BaseEvaluator):
         pbar = tqdm(
             total=len(tuples_to_eval),
             ncols=100,
-            desc="Evaluating documents",
+            desc="Evaluating answers",
             disable=not use_progress_bar,
             leave=False,
             position=0,
@@ -142,27 +141,29 @@ class BaseAnswerEvaluator(BaseEvaluator):
 
         for chunk in chunks:
             responses = await self.__fetch_chunk(chunk)
-            answers.extend(responses)
+            evaluations.extend(responses)
             pbar.update(len(chunk))
         pbar.close()
+        self._add_evaluations_to_answers(queries, evaluations)
 
         if self.config.verbose:
             print("✅ Done!")
-            print(f"Total evaluations: {len(answers)}")
+            print(f"Total evaluations: {len(evaluations)}")
 
-        return answers
+        return queries
 
-    def batch_evaluate(self, queries: list[Query]) -> list[AnswerEvaluatorResult]:
+    def batch_evaluate(self, queries: list[Query]) -> list[Query]:
         use_progress_bar = self.config.verbose
         failed_evaluations = 0
         evaluations = [AnswerEvaluatorResult(**x) for x in self._get_existing_output()]
         queries = self._add_retrieved_documents_to_queries(
             queries, self.config.documents_path
         )
+        self._add_evaluations_to_answers(queries, evaluations)
 
         tuples_to_eval = self.__get_tuples_to_evaluate(queries, evaluations)
         if len(tuples_to_eval) == 0:
-            return evaluations
+            return queries
 
         for query, agent_answer in tqdm(
             tuples_to_eval,
@@ -179,17 +180,18 @@ class BaseAnswerEvaluator(BaseEvaluator):
             except (RetryError, ValueError):
                 failed_evaluations += 1
                 continue
-            evaluations.append(
-                AnswerEvaluatorResult(
-                    qid=qid, agent=agent, raw_answer=raw_answer, answer=answer
-                )
+            evaluation = AnswerEvaluatorResult(
+                qid=qid, agent=agent, raw_answer=raw_answer, answer=answer
             )
-            self._dump_response(evaluations[-1], self.output_columns, self.output_file)
+            q_idx = self.__query_idx[qid]
+            a_idx = self.__answer_idx[qid][agent]
+            queries[q_idx].answers[a_idx].evaluation = evaluation
+            self._dump_response(evaluation, self.output_columns, self.output_file)
         if self.config.verbose:
             print("✅ Done!")
             print(f"Unparsed answers: {failed_evaluations}")
             print(f"Total evaluations: {len(evaluations)}")
-        return evaluations
+        return queries
 
     def evaluate(
         self,
@@ -266,8 +268,11 @@ class BaseAnswerEvaluator(BaseEvaluator):
         text_column: str = "document_text",
         overwrite: bool = False,
     ):
-        if all([len(q.retrieved_docs) > 0 for q in queries]) and not overwrite:
-            logger.info("All queries already have retrieved documents")
+        if any([len(q.retrieved_docs) > 0 for q in queries]) and not overwrite:
+            logger.info(
+                "Some queries already have retrieved documents"
+                "Refusing to overwrite them."
+            )
             return queries
         if documents_path is None:
             logger.warning(
@@ -279,6 +284,47 @@ class BaseAnswerEvaluator(BaseEvaluator):
             documents_path, queries, document_text_col=text_column
         )
         return queries_with_docs
+
+    def __build_query_and_answer_idx(self, queries: list[Query]):
+        self.__query_idx = {query.qid: idx for idx, query in enumerate(queries)}
+        self.__answer_idx: dict[str, dict[str, int]] = {}
+        self.__pairwise_games_idx: dict[str, dict[tuple[str, str], int]] = {}
+        for query in queries:
+            self.__answer_idx[query.qid] = {
+                ans.agent: idx for idx, ans in enumerate(query.answers)
+            }
+            self.__pairwise_games_idx[query.qid] = {
+                (game.agent_a, game.agent_b): idx
+                for idx, game in enumerate(query.pairwise_games)
+            }
+
+    def _add_evaluations_to_answers(
+        self, queries: list[Query], evaluations: list[AnswerEvaluatorResult]
+    ):
+        self.__build_query_and_answer_idx(queries)
+        for evaluation in evaluations:
+            query_idx = self.__query_idx[evaluation.qid]
+            if evaluation.pairwise:
+                if not evaluation.agent_a or not evaluation.agent_b:
+                    # Should never happen, as the pydantic model enforces this
+                    raise ValueError("Pairwise evaluations require two agents")
+                agents = (evaluation.agent_a, evaluation.agent_b)
+                if agents not in self.__pairwise_games_idx[evaluation.qid]:
+                    agents = (evaluation.agent_b, evaluation.agent_a)
+                    if agents not in self.__pairwise_games_idx[evaluation.qid]:
+                        raise ValueError(
+                            f"Pairwise evaluation between {evaluation.agent_a} and {evaluation.agent_b} "
+                            f"not found in query {evaluation.qid}"
+                        )
+                game_idx = self.__pairwise_games_idx[evaluation.qid][agents]
+                queries[query_idx].pairwise_games[game_idx].evaluation = evaluation
+
+            else:
+                if evaluation.agent is None:
+                    # Should never happen.
+                    raise ValueError("Evaluation must have an agent")
+                answer_idx = self.__answer_idx[evaluation.qid][evaluation.agent]
+                queries[query_idx].answers[answer_idx].evaluation = evaluation
 
 
 class AnswerEvaluatorFactory:

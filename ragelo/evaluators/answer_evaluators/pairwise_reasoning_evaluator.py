@@ -22,6 +22,7 @@ from ragelo.types import (
     Query,
 )
 from ragelo.types.configurations import PairwiseEvaluatorConfig
+from ragelo.types.types import PairwiseGame
 
 
 @AnswerEvaluatorFactory.register(AnswerEvaluatorTypes.PAIRWISE_REASONING)
@@ -82,22 +83,25 @@ and "[[C]]" for a tie.
         failed_evaluations = 0
         evaluations = [AnswerEvaluatorResult(**x) for x in self._get_existing_output()]
         skip_tuples = {(x.qid, x.agent_a, x.agent_b) for x in evaluations}
-        tuples_to_eval = []
+        tuples_to_eval: list[tuple[Query, AgentAnswer, AgentAnswer]] = []
         all_tuples = 0
         queries = self._add_retrieved_documents_to_queries(
             queries, documents_path=self.config.documents_path, text_column="answer"
         )
+        queries = self.__prepare_tuples_for_queries(queries)
+        self._add_evaluations_to_answers(queries, evaluations)
         for query in queries:
-            games_to_play = self.__prepare_tuples_for_query(query)
-            for answer_a, answer_b in games_to_play:
+            for game in query.pairwise_games:
                 qid = query.qid
-                agent_a = answer_a.agent
-                agent_b = answer_b.agent
+                game_tuple = (qid, game.agent_a, game.agent_b)
+                game_tuple_r = (qid, game.agent_b, game.agent_a)
                 all_tuples += 1
-                if (qid, agent_a, agent_b) in skip_tuples:
-                    logger.debug(f"Skipping {qid} {agent_a} {agent_b}")
+                if game_tuple in skip_tuples or (
+                    game_tuple_r in skip_tuples and self.config.bidirectional
+                ):
+                    logger.debug(f"Skipping {game_tuple}")
                     continue
-                tuples_to_eval.append((query, answer_a, answer_b))
+                tuples_to_eval.append((query, game.agent_a_answer, game.agent_b_answer))
         if len(tuples_to_eval) == 0:
             logger.info("All answers have been evaluated")
             if self.config.verbose:
@@ -128,16 +132,17 @@ and "[[C]]" for a tie.
             except (RetryError, ValueError):
                 failed_evaluations += 1
                 continue
-            evaluations.append(
-                AnswerEvaluatorResult(
-                    qid=query.qid,
-                    agent_a=agent_a,
-                    agent_b=agent_b,
-                    raw_answer=raw_answer,
-                    answer=parsed_answer,
-                )
+            evaluation = AnswerEvaluatorResult(
+                qid=query.qid,
+                agent_a=agent_a,
+                agent_b=agent_b,
+                raw_answer=raw_answer,
+                answer=parsed_answer,
             )
-            self._dump_response(evaluations[-1], self.output_columns, self.output_file)
+            query_idx = self.__query_idx[query.qid]
+            game_idx = self.__pairwise_games_idx[query.qid][(agent_a, agent_b)]
+            queries[query_idx].pairwise_games[game_idx].evaluation = evaluation
+            self._dump_response(evaluation, self.output_columns, self.output_file)
         if self.config.verbose:
             print("✅ Done!")
             print(f"Unparsed answers: {failed_evaluations}")
@@ -228,18 +233,26 @@ and "[[C]]" for a tie.
         random.shuffle(pairs)
         return pairs[: self.k]
 
-    def __prepare_tuples_for_query(
+    def __prepare_tuples_for_queries(
         self,
-        query: Query,
-    ) -> list[tuple[AgentAnswer, AgentAnswer]]:
-        all_tuples = []
-        answers = {}
-        for agent_answer in query.answers:
-            answers[agent_answer.agent] = agent_answer
-        random_pairs = self.__generate_games_per_query(query)
-        for agent_a, agent_b in random_pairs:
-            all_tuples.append((answers[agent_a], answers[agent_b]))
-        return all_tuples
+        queries: list[Query],
+    ) -> list[Query]:
+        # -> list[tuple[AgentAnswer, AgentAnswer]]:
+        for query in queries:
+            answers: dict[str, AgentAnswer] = {}
+            for agent_answer in query.answers:
+                answers[agent_answer.agent] = agent_answer
+            random_pairs = self.__generate_games_per_query(query)
+            for agent_a, agent_b in random_pairs:
+                query.pairwise_games.append(
+                    PairwiseGame(
+                        agent_a=agent_a,
+                        agent_b=agent_b,
+                        agent_a_answer=answers[agent_a],
+                        agent_b_answer=answers[agent_b],
+                    )
+                )
+        return queries
 
     def _process_answer(self, answer: str) -> str:
         """Extracts the relevant part of an answer."""
