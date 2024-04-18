@@ -64,6 +64,7 @@ class AnswerEvaluatorTypes(StrEnum):
     """Enum that contains the names of the available answer evaluators"""
 
     PAIRWISE_REASONING = "pairwise_reasoning"
+    PAIRWISE = "pairwise"
     CUSTOM_PROMPT = "custom_prompt"
 
 
@@ -85,12 +86,18 @@ class AnswerEvaluatorResult(BaseModel):
 
     @validator
     def check_agents(cls, v):
-        if v.agent is None and (v.agent_a is None or v.agent_b is None):
+        if v.get("agent") is None and (
+            v.get("agent_a") is None or v.get("agent_b") is None
+        ):
             raise ValidationError(
                 "Either agent or agent_a and agent_b must be provided"
             )
-        if v.agent is None and v.agent_a is not None and v.agent_b is not None:
-            v.pairwise = True
+        if (
+            v.get("agent") is None
+            and v.get("agent_a") is not None
+            and v.get("agent_b") is not None
+        ):
+            v["pairwise"] = True
         return v
 
 

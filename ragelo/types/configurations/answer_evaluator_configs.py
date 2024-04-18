@@ -14,6 +14,9 @@ class BaseAnswerEvaluatorConfig(BaseEvaluatorConfig):
         default="documents",
         description="The placeholder for the documents in the prompt",
     )
+    pairwise: bool = Field(
+        default=False, description="Whether or not to the evaluator is pairwise"
+    )
 
 
 class PairwiseEvaluatorConfig(BaseAnswerEvaluatorConfig):
@@ -22,7 +25,7 @@ class PairwiseEvaluatorConfig(BaseAnswerEvaluatorConfig):
     bidirectional: bool = Field(
         default=False, description="Whether or not to run each game in both directions"
     )
-    k: int = Field(default=100, description="Number of games to generate")
+    k: int = Field(default=20, description="Number of games per query to generate")
     output_file: str = Field(
         default="pairwise_answers_evaluations.csv",
         description="Path to the output file",
@@ -30,6 +33,9 @@ class PairwiseEvaluatorConfig(BaseAnswerEvaluatorConfig):
     documents_path: str = Field(
         default="reasonings.csv",
         description="Path with the outputs from the reasoner Retrieval Evaluator",
+    )
+    pairwise: bool = Field(
+        default=True, description="Whether or not to the evaluator is pairwise"
     )
 
 

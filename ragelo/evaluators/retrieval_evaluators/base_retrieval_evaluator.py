@@ -116,7 +116,7 @@ class BaseRetrievalEvaluator(BaseEvaluator):
 
     async def batch_evaluate_async(self, queries: list[Query]) -> list[Query]:
         """Evaluate all the documents for a list of queries"""
-        use_progress_bar = self.config.verbose
+        use_progress_bar = self.config.use_progress_bar
         answers = [RetrievalEvaluatorResult(**x) for x in self._get_existing_output()]
         self._add_evaluations_to_documents(queries, answers)
         tuples_to_eval = self.__get_tuples_to_evaluate(queries, answers)

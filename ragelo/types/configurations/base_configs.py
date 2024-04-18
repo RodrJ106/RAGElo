@@ -20,6 +20,9 @@ class BaseConfig(BaseModel):
         default=False,
         description="Whether or not to be verbose and print all intermediate steps",
     )
+    use_progress_bar: bool = Field(
+        default=True, description="Whether or not to show a progress bar"
+    )
     credentials_file: Optional[str] = Field(
         default=None,
         description="Path to a txt file with the credentials for the different LLM providers",

@@ -9,22 +9,24 @@ from ragelo.types import AgentAnswer, AnswerEvaluatorTypes, Query
 from ragelo.types.configurations import PairwiseEvaluatorConfig
 
 
-@AnswerEvaluatorFactory.register(AnswerEvaluatorTypes.PAIRWISE_REASONING)
-class PairwiseWithReasoningEvaluator(BaseAnswerEvaluator):
+@AnswerEvaluatorFactory.register(AnswerEvaluatorTypes.PAIRWISE)
+class PairwiseEvaluator(BaseAnswerEvaluator):
     """A evaluator that evaluates RAG-based answers pairwise, with document reasoning"""
 
     config: PairwiseEvaluatorConfig
     output_columns: list[str] = ["qid", "agent_a", "agent_b", "raw_answer", "answer"]
+    document_template: str = (
+        "[RETRIEVED DOCUMENT]\n{doc}\n[DOCUMENT RELEVANCE]\n{annotation}\n"
+    )
     output_file: str = "pairwise_answers_evaluations.csv"
-    document_template: str = "[{did}] {annotation}\n"
     prompt = """
 Please act as an impartial judge and evaluate the quality of the responses provided \
 by two AI assistants tasked to answer the question displayed below, based on a set \
 of documents retrieved by a search engine.
 You should choose the assistant that best answers the user question based on a set \
 of reference documents that may or not be relevant.
-Answers cite documents using square brackets. For each reference document, you will \
-be provided with a reasoning explaining why the document is or is not relevant.
+Will you be provided with the text of each reference document, as well as a reasoning 
+why the document is or is not relevant.
 Your evaluation should consider factors such as the correctness, helpfulness, \
 completeness, accuracy, depth, and level of detail of their responses.\
 Details are only useful if they answer the user question. If an answer \
@@ -60,15 +62,13 @@ and "[[C]]" for a tie.
         llm_provider: BaseLLMProvider,
     ):
         super().__init__(config, llm_provider)
-        self.k = self.config.k
-        self.bidirectional = self.config.bidirectional
         self.pattern = re.compile(r"\[\[([^]]+)]].*$(?:(?!\[\[).)*", re.DOTALL)
 
     def _build_message_pairwise(
         self, query: Query, answer: AgentAnswer | tuple[AgentAnswer, AgentAnswer]
     ) -> str:
         assert isinstance(answer, tuple)
-        reasonings = self._prepare_documents(query)
+        documents = self._prepare_documents(query)
         query_metadata = self._get_usable_fields_from_metadata(
             self.prompt, query.metadata, skip_fields=[self.config.query_placeholder]
         )
@@ -84,7 +84,7 @@ and "[[C]]" for a tie.
         )
         formatters = {
             self.config.query_placeholder: query.query,
-            self.config.documents_placeholder: reasonings,
+            self.config.documents_placeholder: documents,
             "answer_a": answer[0].text,
             "answer_b": answer[1].text,
             **query_metadata,
@@ -102,3 +102,22 @@ and "[[C]]" for a tie.
         if answer not in ["A", "B", "C"]:
             raise ValueError(f"Unknown answer: {answer}")
         return answer
+
+    # @staticmethod
+    # def _load_reasonings(
+    #     reasoning_path: str,
+    #     query_id_col: str = "qid",
+    #     document_id_col: str = "did",
+    #     answer_col: str = "answer",
+    # ) -> dict[str, dict[str, str]]:
+    #     reasoning: dict[str, dict[str, str]] = defaultdict(lambda: dict())
+    #     reasoning_read = 0
+    #     if not os.path.exists(reasoning_path):
+    #         raise FileNotFoundError(f"Reasoning file {reasoning_path} not found")
+
+    #     logger.info(f"Loading reasonings from {reasoning_path}")
+    #     for line in csv.DictReader(open(reasoning_path)):
+    #         reasoning_read += 1
+    #         reasoning[line[query_id_col]][line[document_id_col]] = line[answer_col]
+    #     logger.info(f"Loaded {reasoning_read} reasonings")
+    #     return dict(reasoning)

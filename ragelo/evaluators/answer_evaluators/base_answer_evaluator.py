@@ -1,7 +1,9 @@
 """Base model for dealing with answer evaluators"""
 
 import asyncio
+import random
 from abc import abstractmethod
+from string import Formatter
 from typing import Any, Callable, Optional, Type, get_type_hints
 
 from aiohttp import ClientSession
@@ -20,6 +22,7 @@ from ragelo.types import (
     Query,
 )
 from ragelo.types.configurations import BaseAnswerEvaluatorConfig
+from ragelo.types.types import PairwiseGame
 from ragelo.utils import load_retrieved_docs_from_csv
 
 
@@ -27,6 +30,7 @@ class BaseAnswerEvaluator(BaseEvaluator):
     config: BaseAnswerEvaluatorConfig
     output_columns = ["qid", "agent", "raw_answer", "answer"]
     output_file: str = "answers_evaluations.csv"
+    document_template: str = "[{did}] {doc}"
 
     def __init__(
         self,
@@ -78,7 +82,7 @@ class BaseAnswerEvaluator(BaseEvaluator):
 
         return tuples_to_eval
 
-    async def __fetch_chunk(
+    async def _fetch_chunk_pointwise(
         self, chunk: list[tuple[Query, AgentAnswer]]
     ) -> list[AnswerEvaluatorResult]:
         qids = []
@@ -113,9 +117,49 @@ class BaseAnswerEvaluator(BaseEvaluator):
                 )
         return parsed_answers
 
-    async def batch_evaluate_async(self, queries: list[Query]) -> list[Query]:
-        """Evaluate all the documents for a list of queries"""
-        use_progress_bar = self.config.verbose
+    async def _fetch_chunk_pairwise(
+        self, chunk: list[tuple[Query, AgentAnswer]]
+    ) -> list[AnswerEvaluatorResult]:
+        qids = []
+        agent_ids = []
+        async with ClientSession() as session:
+            tasks = []
+            for query, agent_answer_a, agent_answer_b in chunk:
+                prompt = self._build_message_pairwise(
+                    query, (agent_answer_a, agent_answer_b)
+                )
+                qids.append(query.qid)
+                agent_ids.append((agent_answer_a.agent, agent_answer_b.agent))
+                tasks.append(self.llm_provider.call_async(prompt, session))
+            raw_answers = await asyncio.gather(*tasks)
+            parsed_answers = []
+            for qid, agent_id, raw_answer in zip(qids, agent_ids, raw_answers):
+                try:
+                    answer = self._process_answer(raw_answer)
+                except ValueError:
+                    logger.warning(
+                        f"Failed to PARSE answer for qid: {qid} agent: {agent_id}"
+                    )
+                    continue
+                parsed_answers.append(
+                    AnswerEvaluatorResult(
+                        qid=qid,
+                        agent_a=agent_id[0],
+                        agent_b=agent_id[1],
+                        pairwise=True,
+                        raw_answer=raw_answer,
+                        answer=answer,
+                    )
+                )
+                self._dump_response(
+                    parsed_answers[-1], self.output_columns, self.output_file
+                )
+        return parsed_answers
+
+    async def _batch_evaluate_pointwise_async(
+        self, queries: list[Query]
+    ) -> list[Query]:
+        use_progress_bar = self.config.use_progress_bar
         evaluations = [AnswerEvaluatorResult(**x) for x in self._get_existing_output()]
         queries = self._add_retrieved_documents_to_queries(
             queries, self.config.documents_path
@@ -140,7 +184,7 @@ class BaseAnswerEvaluator(BaseEvaluator):
         )
 
         for chunk in chunks:
-            responses = await self.__fetch_chunk(chunk)
+            responses = await self._fetch_chunk_pointwise(chunk)
             evaluations.extend(responses)
             pbar.update(len(chunk))
         pbar.close()
@@ -152,14 +196,118 @@ class BaseAnswerEvaluator(BaseEvaluator):
 
         return queries
 
-    def batch_evaluate(self, queries: list[Query]) -> list[Query]:
-        use_progress_bar = self.config.verbose
-        failed_evaluations = 0
-        evaluations = [AnswerEvaluatorResult(**x) for x in self._get_existing_output()]
+    async def batch_evaluate_async(self, queries: list[Query]) -> list[Query]:
+        if self.config.pairwise:
+            return await self._batch_evaluate_pairwise_async(queries)
+        return await self._batch_evaluate_pointwise_async(queries)
+
+    def _prepare_queries_for_eval(
+        self, queries: list[Query], evaluations: list[dict[str, Any]]
+    ) -> list[Query]:
         queries = self._add_retrieved_documents_to_queries(
             queries, self.config.documents_path
         )
+        queries = self.__prepare_tuples_for_queries(queries)
         self._add_evaluations_to_answers(queries, evaluations)
+        return queries
+
+    def _get_tuples_to_evaluate(
+        self, queries: list[Query], evaluations: list[dict[str, Any]]
+    ) -> list[tuple[Query, AgentAnswer]]:
+        skip_tuples = {(x.qid, x.agent_a, x.agent_b) for x in evaluations}
+        tuples_to_eval: list[tuple[Query, AgentAnswer, AgentAnswer]] = []
+        all_tuples = 0
+        for query in queries:
+            for game in query.pairwise_games:
+                qid = query.qid
+                game_tuple = (qid, game.agent_a, game.agent_b)
+                game_tuple_r = (qid, game.agent_b, game.agent_a)
+                all_tuples += 1
+                if game_tuple in skip_tuples or (
+                    game_tuple_r in skip_tuples and self.config.bidirectional
+                ):
+                    logger.debug(f"Skipping {game_tuple}")
+                    continue
+                tuples_to_eval.append((query, game.agent_a_answer, game.agent_b_answer))
+        if len(tuples_to_eval) == 0:
+            logger.info("All answers have been evaluated")
+            if self.config.verbose:
+                print(
+                    f"All {all_tuples} answers are already evaluated.\n"
+                    "If you want to re-evaluate them, use the force flag"
+                )
+
+        return tuples_to_eval
+
+    async def _batch_evaluate_pairwise_async(self, queries: list[Query]) -> list[Query]:
+        use_progress_bar = self.config.use_progress_bar
+        evaluations = [AnswerEvaluatorResult(**x) for x in self._get_existing_output()]
+        queries = self._prepare_queries_for_eval(queries, evaluations)
+
+        tuples_to_eval = self._get_tuples_to_evaluate(queries, evaluations)
+        if len(tuples_to_eval) == 0:
+            return queries
+
+        chunks = [
+            tuples_to_eval[i : i + self.config.n_processes]
+            for i in range(0, len(tuples_to_eval), self.config.n_processes)
+        ]
+        pbar = tqdm(
+            total=len(tuples_to_eval),
+            ncols=100,
+            desc="Evaluating answers",
+            disable=not use_progress_bar,
+            leave=False,
+            position=0,
+        )
+
+        for chunk in chunks:
+            responses = await self._fetch_chunk_pairwise(chunk)
+            evaluations.extend(responses)
+            pbar.update(len(chunk))
+        pbar.close()
+        self._add_evaluations_to_answers(queries, evaluations)
+
+        if self.config.verbose:
+            print("✅ Done!")
+            print(f"Total evaluations: {len(evaluations)}")
+
+        return queries
+
+    def __prepare_tuples_for_queries(
+        self,
+        queries: list[Query],
+    ) -> list[Query]:
+        for query in queries:
+            answers: dict[str, AgentAnswer] = {}
+            for agent_answer in query.answers:
+                answers[agent_answer.agent] = agent_answer
+            random_pairs = self.__generate_agent_pairs(query)
+            for agent_a, agent_b in random_pairs:
+                query.pairwise_games.append(
+                    PairwiseGame(
+                        agent_a=agent_a,
+                        agent_b=agent_b,
+                        agent_a_answer=answers[agent_a],
+                        agent_b_answer=answers[agent_b],
+                    )
+                )
+        return queries
+
+    def batch_evaluate(self, queries: list[Query]) -> list[Query]:
+        if self.config.pairwise:
+            return self._batch_evaluate_pairwise(queries)
+        return self._batch_evaluate_pointwise(queries)
+
+    def _batch_evaluate_pointwise(self, queries: list[Query]) -> list[Query]:
+        use_progress_bar = self.config.use_progress_bar
+        failed_evaluations = 0
+        evaluations = [AnswerEvaluatorResult(**x) for x in self._get_existing_output()]
+        queries = self._prepare_queries_for_eval(queries, evaluations)
+        # queries = self._add_retrieved_documents_to_queries(
+        #     queries, self.config.documents_path
+        # )
+        # self._add_evaluations_to_answers(queries, evaluations)
 
         tuples_to_eval = self.__get_tuples_to_evaluate(queries, evaluations)
         if len(tuples_to_eval) == 0:
@@ -193,7 +341,118 @@ class BaseAnswerEvaluator(BaseEvaluator):
             print(f"Total evaluations: {len(evaluations)}")
         return queries
 
+    def _batch_evaluate_pairwise(self, queries: list[Query]) -> list[Query]:
+        use_progress_bar = self.config.use_progress_bar
+        failed_evaluations = 0
+        all_tuples = 0
+        evaluations = [AnswerEvaluatorResult(**x) for x in self._get_existing_output()]
+        skip_tuples = {(x.qid, x.agent_a, x.agent_b) for x in evaluations}
+        tuples_to_eval: list[tuple[Query, AgentAnswer, AgentAnswer]] = []
+        queries = self._prepare_queries_for_eval(queries, evaluations)
+
+        for query in queries:
+            for game in query.pairwise_games:
+                qid = query.qid
+                game_tuple = (qid, game.agent_a, game.agent_b)
+                game_tuple_r = (qid, game.agent_b, game.agent_a)
+                all_tuples += 1
+                if game_tuple in skip_tuples or (
+                    game_tuple_r in skip_tuples and self.config.bidirectional
+                ):
+                    logger.debug(f"Skipping {game_tuple}")
+                    continue
+                tuples_to_eval.append((query, game.agent_a_answer, game.agent_b_answer))
+        if len(tuples_to_eval) == 0:
+            logger.info("All answers have been evaluated")
+            if self.config.verbose:
+                print(
+                    f"All {all_tuples} answers are already evaluated.\n"
+                    "If you want to re-evaluate them, use the force flag"
+                )
+            return evaluations
+        for query, answer_a, answer_b in tqdm(
+            tuples_to_eval,
+            desc=use_progress_bar,
+            disable=not self.config.verbose,
+            leave=False,
+            position=0,
+            ncols=100,
+        ):
+            agent_a = answer_a.agent
+            agent_b = answer_b.agent
+            try:
+                raw_answer, parsed_answer = self.evaluate_pairwise(
+                    query=query,
+                    answer_a=answer_a,
+                    answer_b=answer_b,
+                    retrieved_documents=query.retrieved_docs,
+                )
+            except (RetryError, ValueError):
+                failed_evaluations += 1
+                continue
+            evaluation = AnswerEvaluatorResult(
+                qid=query.qid,
+                agent_a=agent_a,
+                agent_b=agent_b,
+                raw_answer=raw_answer,
+                answer=parsed_answer,
+            )
+            query_idx = self.__query_idx[query.qid]
+            game_idx = self.__pairwise_games_idx[query.qid][(agent_a, agent_b)]
+            queries[query_idx].pairwise_games[game_idx].evaluation = evaluation
+            self._dump_response(evaluation, self.output_columns, self.output_file)
+
+        if self.config.verbose:
+            print("✅ Done!")
+            print(f"Unparsed answers: {failed_evaluations}")
+            print(f"Total evaluations: {len(evaluations)}")
+        return evaluations
+
+    def __generate_agent_pairs(self, query: Query) -> list[tuple[str, str]]:
+        """Generates up to self.k random pairs of agents for the given query"""
+        query_agents = list({x.agent for x in query.answers})
+        # Create all possible pairs
+        pairs = [(a, b) for a in query_agents for b in query_agents if a != b]
+        if self.config.bidirectional:
+            pairs += [(b, a) for a, b in pairs]
+        random.shuffle(pairs)
+        return pairs[: self.config.k]
+
     def evaluate(
+        self,
+        query: Query | str,
+        answer: Optional[AgentAnswer | str] = None,
+        answer_a: Optional[AgentAnswer | str] = None,
+        answer_b: Optional[AgentAnswer | str] = None,
+        retrieved_documents: Optional[list[str] | list[Document]] = None,
+        document_metadata: Optional[list[dict[str, Any]]] = None,
+        query_metadata: Optional[dict[str, Any]] = None,
+        answer_metadata: Optional[dict[str, Any]] = None,
+        answer_a_metadata: Optional[dict[str, Any]] = None,
+        answer_b_metadata: Optional[dict[str, Any]] = None,
+    ):
+        if self.config.pairwise:
+            self._evaluate_pairwise(
+                query,
+                answer_a,
+                answer_b,
+                retrieved_documents,
+                document_metadata,
+                query_metadata,
+                answer_a_metadata,
+                answer_b_metadata,
+            )
+        else:
+            self._evaluate_pointwise(
+                query,
+                answer,
+                retrieved_documents,
+                document_metadata,
+                query_metadata,
+                answer_metadata,
+            )
+
+    def _evaluate_pointwise(
         self,
         query: Query | str,
         answer: AgentAnswer | str,
@@ -231,9 +490,59 @@ class BaseAnswerEvaluator(BaseEvaluator):
             raise e
         return raw_answer, processed_answer
 
-    @abstractmethod
+    def _evaluate_pairwise(
+        self,
+        query: Query | str,
+        answer_a: AgentAnswer | str,
+        answer_b: AgentAnswer | str,
+        retrieved_documents: list[str] | list[Document],
+        document_metadata: Optional[list[dict[str, Any]]] = None,
+        query_metadata: Optional[dict[str, Any]] = None,
+        answer_a_metadata: Optional[dict[str, Any]] = None,
+        answer_b_metadata: Optional[dict[str, Any]] = None,
+    ) -> tuple[str, str]:
+        query = self._assemble_query(query, query_metadata)
+        answer_a = self._assemble_answer(answer_a, answer_a_metadata)
+        answer_b = self._assemble_answer(answer_b, answer_b_metadata)
+        if isinstance(retrieved_documents, str):
+            retrieved_documents = [retrieved_documents]
+        if retrieved_documents:
+            retrieved_and_assembled_docs = self._assemble_documents(
+                retrieved_documents, document_metadata
+            )
+            query.retrieved_docs = retrieved_and_assembled_docs
+
+        prompt = self._build_message_pairwise(query, (answer_a, answer_b))
+        qid = query.qid
+        agent_a_id = answer_a.agent
+        agent_b_id = answer_b.agent
+
+        try:
+            raw_answer = self.llm_provider(prompt)
+        except RetryError as e:
+            logger.warning(
+                f"Failed to FETCH answers for {qid} {agent_a_id}, {agent_b_id}"
+            )
+            raise e
+        try:
+            processed_answer = self._process_answer(raw_answer)
+        except ValueError as e:
+            logger.warning(
+                f"Failed extracting answer for {qid}, {agent_a_id}, {agent_b_id}."
+                "Probably not enough tokens in the answer."
+                f"Full answer:\n{raw_answer}",
+            )
+            raise e
+        return raw_answer, processed_answer
+
     def _build_message(
         self, query: Query, answer: AgentAnswer
+    ) -> str | list[dict[str, str]]:
+        """Builds the message to send to the LLM evaluator"""
+        raise NotImplementedError
+
+    def _build_message_pairwise(
+        self, query: Query, answer: AgentAnswer | tuple[AgentAnswer, AgentAnswer]
     ) -> str | list[dict[str, str]]:
         """Builds the message to send to the LLM evaluator"""
         raise NotImplementedError
@@ -254,12 +563,31 @@ class BaseAnswerEvaluator(BaseEvaluator):
     ) -> list[AnswerEvaluatorResult]:
         return [AnswerEvaluatorResult(**x) for x in answers]
 
-    @staticmethod
-    def _prepare_documents(query: Query) -> str:
-        documents = [(d.did, d.text) for d in query.retrieved_docs]
-        if len(documents) == 0:
+    def _prepare_documents(self, query: Query) -> str:
+        if len(query.retrieved_docs) == 0:
             return "NO DOCUMENTS WERE RETRIEVED"
-        return "\n".join([f"[{did}] {doc.strip()}" for did, doc in documents])
+        formatted_documents = []
+        fields_to_format = [
+            field
+            for _, field, _, _ in Formatter().parse(self.document_template)
+            if field
+        ]
+        for document in query.retrieved_docs:
+            formatter = {}
+            if "did" in fields_to_format:
+                formatter["did"] = document.did
+            if "doc" in fields_to_format:
+                formatter["doc"] = document.text
+            if "raw_annotation" in fields_to_format:
+                formatter["raw_annotation"] = document.evaluation.raw_answer
+            if "annotation" in fields_to_format:
+                formatter["annotation"] = document.evaluation.answer
+            document_metadata = self._get_usable_fields_from_metadata(
+                self.document_template, document.metadata
+            )
+            formatter.update(**document_metadata)
+            formatted_documents.append(self.document_template.format(**formatter))
+        return "\n".join(formatted_documents)
 
     def _add_retrieved_documents_to_queries(
         self,
