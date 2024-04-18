@@ -110,12 +110,24 @@ class BaseEvaluator(ABC):
             return [json.loads(line) for line in f]
 
     @staticmethod
-    def __get_existing_output_from_csv(output_file: str) -> list[dict[str, Any]]:
+    def __get_existing_output_from_csv(
+        output_file: str,
+        scoring_keys: list[str] = [],
+    ) -> list[dict[str, Any]]:
         existing_lines: list[dict[str, str]] = []
         with open(output_file, "r") as f:
             reader = csv.DictReader(f)
             for line in reader:
-                existing_lines.append(line)
+                if len(scoring_keys) > 0 and any(
+                    k in scoring_keys for k in line.keys()
+                ):
+                    line_dict = {"answer": {k: line[k] for k in scoring_keys}}
+                    left_keys = set(line.keys()) - set(line_dict.keys())
+                    for k in left_keys:
+                        line_dict[k] = line[k]
+                else:
+                    line_dict = line
+                existing_lines.append(line_dict)
         return existing_lines
 
     def _get_existing_output(self) -> list[dict[str, Any]]:
@@ -130,7 +142,9 @@ class BaseEvaluator(ABC):
         if self.output_file.endswith(".jsonl"):
             return self.__get_existing_output_from_jsonl(self.output_file)
         else:
-            return self.__get_existing_output_from_csv(self.output_file)
+            return self.__get_existing_output_from_csv(
+                self.output_file, self.config.scoring_keys
+            )
 
     @staticmethod
     def _print_response(
@@ -192,7 +206,8 @@ class BaseEvaluator(ABC):
                 writer.writeheader()
         with open(output_file, "a") as f:
             writer = csv.DictWriter(f, fieldnames=output_columns)
-            writer.writerow(answer_dict)
+            dict_to_write = {k: answer_dict.get(k, None) for k in output_columns}
+            writer.writerow(dict_to_write)
 
     @staticmethod
     def __dump_response_jsonl(answer_dict: dict[str, str], output_file: str):
