@@ -8,7 +8,8 @@ class LLMProviderConfig(BaseModel):
     max_retries: int = 3
     sleep_time: int = 2
     temperature: float = 0.1
-    max_tokens: int = 512
+    max_tokens: int = 2048
+    use_async: bool = True
 
 
 class OpenAIConfiguration(LLMProviderConfig):
