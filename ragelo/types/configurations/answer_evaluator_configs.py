@@ -1,3 +1,5 @@
+from importlib import metadata
+
 from pydantic import Field
 
 from ragelo.types.configurations.base_configs import AnswerFormat, BaseEvaluatorConfig
@@ -17,15 +19,19 @@ class BaseAnswerEvaluatorConfig(BaseEvaluatorConfig):
     pairwise: bool = Field(
         default=False, description="Whether or not to the evaluator is pairwise"
     )
+    bidirectional: bool = Field(
+        default=False, description="Whether or not to run each game in both directions"
+    )
+    k: int = Field(default=10, description="Number of games per query to generate")
+    scoring_keys: list[str] = Field(
+        default=[],
+        description="The fields to extract from the answer",
+    )
 
 
 class PairwiseEvaluatorConfig(BaseAnswerEvaluatorConfig):
     """Configuration for the pairwise evaluator."""
 
-    bidirectional: bool = Field(
-        default=False, description="Whether or not to run each game in both directions"
-    )
-    k: int = Field(default=20, description="Number of games per query to generate")
     output_file: str = Field(
         default="pairwise_answers_evaluations.csv",
         description="Path to the output file",

@@ -166,9 +166,10 @@ class BaseRetrievalEvaluator(BaseEvaluator):
             if evaluation.qid not in self.__query_idx:
                 raise ValueError(f"Query {evaluation.qid} not found in the queries")
             if evaluation.did not in self.__doc_idx[evaluation.qid]:
-                raise ValueError(
+                logger.warning(
                     f"Document {evaluation.did} not found in the documents retrieved for query {evaluation.qid}"
                 )
+                continue
             q_idx = self.__query_idx[evaluation.qid]
             d_idx = self.__doc_idx[evaluation.qid][evaluation.did]
             queries[q_idx].retrieved_docs[d_idx].evaluation = evaluation

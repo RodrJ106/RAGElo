@@ -5,6 +5,7 @@ import logging
 import os
 from collections import defaultdict
 
+from ragelo.logger import logger
 from ragelo.types.types import AgentAnswer, Document, Query
 
 
@@ -72,10 +73,11 @@ def load_retrieved_docs_from_csv(
 
     """
     documents_read = 0
-    if not os.path.isfile(documents_path):
-        raise FileNotFoundError(f"Documents file {documents_path} not found")
     if isinstance(queries, str):
         queries = load_queries_from_csv(queries)
+    if not os.path.isfile(documents_path):
+        logger.warning(f"Documents file {documents_path} not found")
+        return queries
     queries_dict = {q.qid: q for q in queries}
 
     for line in csv.DictReader(open(documents_path)):

@@ -11,11 +11,11 @@ _PYDANTIC_MAJOR_VERSION: int = int(metadata.version("pydantic").split(".")[0])
 if _PYDANTIC_MAJOR_VERSION == 1:
     from pydantic import root_validator
 
-    validator = root_validator(pre=True)
+    validator = root_validator(pre=True)  # type: ignore
 else:
     from pydantic import model_validator
 
-    validator = model_validator(mode="before")
+    validator = model_validator(mode="before")  # type: ignore
 
 
 class BaseModel(PydanticBaseModel):
@@ -77,26 +77,34 @@ class RetrievalEvaluatorResult(BaseModel):
 
 class AnswerEvaluatorResult(BaseModel):
     qid: str
-    raw_answer: str
-    answer: str | int | dict[str, Any]
+    raw_answer: Optional[str]
+    answer: Optional[str | int | dict[str, Any]]
     agent: Optional[str] = None
     agent_a: Optional[str] = None
     agent_b: Optional[str] = None
     pairwise: bool = False
+    exception: Optional[str] = None
 
     @validator
+    @classmethod
     def check_agents(cls, v):
-        if v.get("agent") is None and (
-            v.get("agent_a") is None or v.get("agent_b") is None
-        ):
-            raise ValidationError(
-                "Either agent or agent_a and agent_b must be provided"
-            )
-        if (
-            v.get("agent") is None
-            and v.get("agent_a") is not None
-            and v.get("agent_b") is not None
-        ):
+        agent = v.get("agent")
+        agent_a = v.get("agent_a")
+        agent_b = v.get("agent_b")
+        raw_answer = v.get("raw_answer")
+        answer = v.get("answer")
+        exception = v.get("exception")
+        if not agent:
+            if not agent_a or not agent_b:
+                raise ValidationError(
+                    "Either agent or agent_a and agent_b must be provided"
+                )
+        if not raw_answer or not answer:
+            if not exception:
+                raise ValidationError(
+                    "Either answer or raw_answer must be provided. Otherwise, an exception must be provided."
+                )
+        if agent_a and agent_b:
             v["pairwise"] = True
         return v
 
@@ -155,8 +163,8 @@ class AgentAnswer(BaseModel):
 
 
 class PairwiseGame(BaseModel):
-    agent_a: str
-    agent_b: str
+    # agent_a: str
+    # agent_b: str
     agent_a_answer: AgentAnswer
     agent_b_answer: AgentAnswer
     evaluation: Optional[AnswerEvaluatorResult] = None
