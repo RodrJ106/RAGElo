@@ -2,7 +2,6 @@ from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 
 from ragelo.llm_providers.base_llm_provider import BaseLLMProvider, LLMProviderFactory
-from ragelo.logger import logger
 from ragelo.types import LLMProviderTypes
 from ragelo.types.configurations import OpenAIConfiguration
 
@@ -51,7 +50,6 @@ class OpenAIProvider(BaseLLMProvider):
     async def call_async(
         self,
         prompt: str | list[dict[str, str]],
-        # session: ClientSession,
     ) -> str:
         """Calls the OpenAI API asynchronously.
 

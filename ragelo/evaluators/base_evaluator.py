@@ -117,16 +117,21 @@ class BaseEvaluator(ABC):
         existing_lines: list[dict[str, str]] = []
         with open(output_file, "r") as f:
             reader = csv.DictReader(f)
+            line: dict[str, str]
             for line in reader:
                 if len(scoring_keys) > 0 and any(
                     k in scoring_keys for k in line.keys()
                 ):
-                    line_dict = {"answer": {k: line[k] for k in scoring_keys}}
+                    line_dict: dict[str, Any] = {
+                        "answer": {k: line[k] for k in scoring_keys}
+                    }
                     left_keys = set(line.keys()) - set(line_dict.keys())
                     for k in left_keys:
                         line_dict[k] = line[k]
                 else:
                     line_dict = line
+                # remove any keys with empty values or None
+                line_dict = {k: v for k, v in line_dict.items() if v and k}
                 existing_lines.append(line_dict)
         return existing_lines
 

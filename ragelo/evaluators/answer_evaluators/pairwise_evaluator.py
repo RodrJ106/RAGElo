@@ -25,13 +25,13 @@ by two AI assistants tasked to answer the question displayed below, based on a s
 of documents retrieved by a search engine.
 You should choose the assistant that best answers the user question based on a set \
 of reference documents that may or not be relevant.
-Will you be provided with the text of each reference document, as well as a reasoning 
+Will you be provided with the text of each reference document, as well as a reasoning \
 why the document is or is not relevant.
-Your evaluation should consider factors such as the correctness, helpfulness, \
-completeness, accuracy, depth, and level of detail of their responses.\
-Details are only useful if they answer the user question. If an answer \
-contains non-relevant details, it should not be preferred over one that only \
-use relevant information.
+Your evaluation should consider factors such as the comprehensiveness, \
+correctness, helpfulness, completeness, accuracy, depth, and level of detail \
+of their responses. Answers are comprehensive if they show the user multiple \
+perspectives in addition to but still relevant to the intent of the original \
+question. 
 Begin your evaluation by explaining why each answer correctly answers the user \
 question. Then, you should compare the two responses and provide a short explanation \
 on their differences. Avoid any position biases and ensure that the order in which \
@@ -102,22 +102,3 @@ and "[[C]]" for a tie.
         if answer not in ["A", "B", "C"]:
             raise ValueError(f"Unknown answer: {answer}")
         return answer
-
-    # @staticmethod
-    # def _load_reasonings(
-    #     reasoning_path: str,
-    #     query_id_col: str = "qid",
-    #     document_id_col: str = "did",
-    #     answer_col: str = "answer",
-    # ) -> dict[str, dict[str, str]]:
-    #     reasoning: dict[str, dict[str, str]] = defaultdict(lambda: dict())
-    #     reasoning_read = 0
-    #     if not os.path.exists(reasoning_path):
-    #         raise FileNotFoundError(f"Reasoning file {reasoning_path} not found")
-
-    #     logger.info(f"Loading reasonings from {reasoning_path}")
-    #     for line in csv.DictReader(open(reasoning_path)):
-    #         reasoning_read += 1
-    #         reasoning[line[query_id_col]][line[document_id_col]] = line[answer_col]
-    #     logger.info(f"Loaded {reasoning_read} reasonings")
-    #     return dict(reasoning)
