@@ -163,8 +163,6 @@ class AgentAnswer(BaseModel):
 
 
 class PairwiseGame(BaseModel):
-    # agent_a: str
-    # agent_b: str
     agent_a_answer: AgentAnswer
     agent_b_answer: AgentAnswer
     evaluation: Optional[AnswerEvaluatorResult] = None
