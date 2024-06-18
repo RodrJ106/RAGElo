@@ -19,8 +19,9 @@ class ReasonerEvaluator(BaseRetrievalEvaluator):
     output_file: str = "reasonings.csv"
     config: ReasonerEvaluatorConfig
     prompt = """
-You are an expert document annotator, evaluating if a document contains relevant \
-information to answer a question submitted by a user. \
+You are an expert document annotator. Your job is to evaluate whether\
+a document contains relevant information to answer a user's question.
+
 Please act as an impartial relevance annotator for a search engine. \
 Your goal is to evaluate the relevancy of the documents given a user question.
 
