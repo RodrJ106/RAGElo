@@ -178,7 +178,16 @@ class Query(BaseModel):
 
     def add_retrieved_doc(
         self, doc: Union[Document, str], doc_id: Optional[str] = None
-    ):
+    ) -> bool:
+        """Add a retrieved document to the query.
+
+        Args:
+            doc (Union[Document, str]): The document to add. If a string, it must be accompanied by a doc_id.
+            doc_id (Optional[str], optional): The document id. Defaults to None.
+
+        Returns:
+            bool: True if the document was added, False otherwise.
+        """
         if isinstance(doc, str):
             if doc_id is None:
                 raise ValueError("doc_id must be provided if doc is a string")
@@ -188,20 +197,41 @@ class Query(BaseModel):
             logger.info(
                 f"Document with did {doc.did} already exists in query {self.qid}"
             )
-            return
+            return False
         self.retrieved_docs.append(doc)
+        return True
 
     def add_agent_answer(
-        self, answer: Union[AgentAnswer, str], agent: Optional[str] = None
-    ):
+        self,
+        answer: Union[AgentAnswer, str],
+        agent: Optional[str] = None,
+        force: bool = False,
+    ) -> bool:
+        """Add an agent answer to the query.
+
+        Args:
+            answer (Union[AgentAnswer, str]): The agent answer to add. If a string, it must be accompanied by an agent.
+            agent (Optional[str], optional): The agent name. Defaults to None.
+
+        Returns:
+            bool: True if the agent answer was added, False otherwise.
+        """
         if isinstance(answer, str):
             if agent is None:
                 raise ValueError("agent must be provided if answer is a string")
             answer = AgentAnswer(agent=agent, text=answer)
         existing_agents = [a.agent for a in self.answers]
         if answer.agent in existing_agents:
-            logger.warning(
-                f"Answer from agent {answer.agent} already exists in query {self.qid}"
-            )
-            return
+            if not force:
+                logger.info(
+                    f"Answer from agent {answer.agent} already exists in query {self.qid}"
+                )
+                return False
+            else:
+                logger.info(
+                    f"Answer from agent {answer.agent} already exists in query {self.qid}. Forcing addition."
+                )
+                # delete the existing answer
+                self.answers = [a for a in self.answers if a.agent != answer.agent]
         self.answers.append(answer)
+        return True
