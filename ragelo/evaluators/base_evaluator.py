@@ -12,12 +12,13 @@ from ragelo.logger import logger
 from ragelo.types import (
     AgentAnswer,
     AnswerEvaluatorResult,
+    AnswerFormat,
+    BaseEvaluatorConfig,
     Document,
     EvaluatorResult,
     Query,
     RetrievalEvaluatorResult,
 )
-from ragelo.types.configurations import AnswerFormat, BaseEvaluatorConfig
 
 
 class BaseEvaluator(ABC):
