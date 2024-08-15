@@ -35,7 +35,7 @@ class BaseEvaluator(ABC):
         raise NotImplementedError
 
     @staticmethod
-    def __parse_json(answer: str, keys: Union[str, List[str]]) -> Dict[str, Any]:
+    def _parse_json(answer: str, keys: Union[str, List[str]]) -> Dict[str, Any]:
         # Checks if there is block of json in the answer like ```json\n{...}\n```
         json_block = answer.split("```json\n")
         if len(json_block) > 1:
@@ -59,7 +59,7 @@ class BaseEvaluator(ABC):
         """Parses a Json answer from the LLM and returns a specific key"""
 
         # Finds all valid JSON objects in the answer that contain the key
-        json_dict = self.__parse_json(answer, key)
+        json_dict = self._parse_json(answer, key)
         if key not in json_dict:
             raise ValueError(
                 "Answer does not contain the necessary key\n"
@@ -181,9 +181,7 @@ class BaseEvaluator(ABC):
                         f"[bold red] {agent_b}[/bold red]"
                     )
                 elif agent:
-                    rich.print(
-                        f"[bold bright_cyan]🕵️ Agent[/bold bright_cyan]: {agent}"
-                    )
+                    rich.print(f"[bold bright_cyan]🕵️ Agent[/bold bright_cyan]: {agent}")
                 if raw_answer != answer:
                     rich.print(f"[bold blue]Raw Answer[/bold blue]: {raw_answer}")
                 rich.print(f"[bold blue]Parsed Answer[/bold blue]: {answer}")

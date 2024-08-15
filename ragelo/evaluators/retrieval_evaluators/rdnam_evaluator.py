@@ -110,8 +110,11 @@ Each rater used their own independent judgement."""
         return formatted_prompt
 
     def _process_answer(self, answer: str) -> int:
+        answer = self._parse_json(answer, keys=["0"])
+        answer = str(answer[0]).replace("'", '"')
         if answer.startswith("[") or answer.startswith("{"):
             # Sometimes the answer is a valid JSON object, even if the prompt ends if "{" or "[{"
+
             try:
                 ans = json.loads(answer)
             except json.decoder.JSONDecodeError:
